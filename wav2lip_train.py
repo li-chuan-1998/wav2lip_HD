@@ -3,7 +3,7 @@ from tqdm import tqdm
 
 from models import SyncNet_color as SyncNet
 from models import Wav2Lip as Wav2Lip
-import audio
+import utils.audio as audio
 
 import torch
 from torch import nn

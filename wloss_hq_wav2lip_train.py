@@ -4,7 +4,7 @@ import torch.autograd as autograd
 
 from models import SyncNet_color as SyncNet
 from models import Wav2Lip, Wav2Lip_disc_qual
-import audio
+import utils.audio as audio
 
 import torch
 from torch import nn
