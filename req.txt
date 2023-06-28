@@ -3,3 +3,4 @@ numpy==1.23.4
 opencv-python
 tqdm
 numba
+gdown
