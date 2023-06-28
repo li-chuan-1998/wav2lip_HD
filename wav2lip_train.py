@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model wi
 parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True, type=str)
 
 parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
-parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator', default="./ckp_ls/lip-sync.pth", type=str)
+parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator', default="./ckp_ls/lip_sync.pth", type=str)
 
 parser.add_argument("--batch_size", type=int, default=32,  help="the batch size")
 
@@ -32,7 +32,7 @@ args = parser.parse_args()
 
 
 global_step = 0
-global_epoch = 0
+global_epoch = 1
 use_cuda = torch.cuda.is_available()
 print('use_cuda: {}'.format(use_cuda))
 
@@ -207,7 +207,7 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
     while global_epoch < nepochs:
         print('Starting Epoch: {}'.format(global_epoch))
         running_sync_loss, running_l1_loss = 0., 0.
-        prog_bar = tqdm(enumerate(train_data_loader), total=len(train_data_loader), desc=f"Epoch {global_epoch}")
+        prog_bar = tqdm(enumerate(train_data_loader), total=len(train_data_loader), desc=f"Epoch {global_epoch}", ncols=100)
         for step, (x, indiv_mels, mel, gt) in prog_bar:
             model.train()
             optimizer.zero_grad()
@@ -242,18 +242,25 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             else:
                 running_sync_loss += 0.
 
-            if global_step == 1 or global_epoch % 3 == 0:
-                save_checkpoint(
-                    model, optimizer, global_step, checkpoint_dir, global_epoch)
+            # if global_step == 1 or global_step % hparams.eval_interval == 0:
+            #     with torch.no_grad():
+            #         average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
 
-            if global_step == 1 or global_step % hparams.eval_interval == 0:
-                with torch.no_grad():
-                    average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+            #         if average_sync_loss < .75:
+            #             hparams.set_hparam('syncnet_wt', 0.01) # without image GAN a lesser weight is sufficient
 
-                    if average_sync_loss < .75:
-                        hparams.set_hparam('syncnet_wt', 0.01) # without image GAN a lesser weight is sufficient
+            prog_bar.set_description(f'Epoch {global_epoch} - L1: {running_l1_loss/(step + 1):.5f}, Sync Loss: {running_sync_loss/(step + 1):.5f}')
+            prog_bar.refresh()
+        
+        if global_epoch % 3 == 0:
+            save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch)
 
-            prog_bar.set_description(f'Epoch {global_epoch} - L1: {running_l1_loss/(step + 1)}, Sync Loss: {running_sync_loss/(step + 1)}')
+        with torch.no_grad():
+            average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+
+            if average_sync_loss < .75:
+                hparams.set_hparam('syncnet_wt', 0.01)
+        
         global_epoch += 1
         
 
@@ -295,7 +302,6 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch):
         "global_epoch": epoch,
     }, checkpoint_path)
     print("Saved checkpoint:", checkpoint_path)
-
 
 def _load(checkpoint_path):
     if use_cuda:
