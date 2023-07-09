@@ -182,7 +182,6 @@ logloss = nn.BCELoss()
 def cosine_loss(a, v, y):
     d = nn.functional.cosine_similarity(a, v)
     loss = logloss(d.unsqueeze(1), y)
-
     return loss
 
 device = torch.device("cuda" if use_cuda else "cpu")
@@ -199,13 +198,14 @@ def get_sync_loss(mel, g):
     y = torch.ones(g.size(0), 1).float().to(device)
     return cosine_loss(a, v, y)
 
+scaler = torch.cuda.amp.GradScaler()
 def train(device, model, train_data_loader, test_data_loader, optimizer,
           checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
 
     global global_step, global_epoch
  
+    hparams.set_hparam('syncnet_wt', 0.01)
     while global_epoch < nepochs:
-        print('Starting Epoch: {}'.format(global_epoch))
         running_sync_loss, running_l1_loss = 0., 0.
         prog_bar = tqdm(enumerate(train_data_loader), total=len(train_data_loader), desc=f"Epoch {global_epoch}", ncols=100)
         model.train()
@@ -219,19 +219,24 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             indiv_mels = indiv_mels.to(device)
             gt = gt.to(device)
 
-            g = model(indiv_mels, x)
+            with torch.cuda.amp.autocast():
+                g = model(indiv_mels, x)
 
-            if hparams.syncnet_wt > 0.:
-                sync_loss = get_sync_loss(mel, g)
-            else:
-                sync_loss = 0.
+                if hparams.syncnet_wt > 0.:
+                    with torch.cuda.amp.autocast(enabled=False):
+                        sync_loss = get_sync_loss(mel.float(), g.float())
+                else:
+                    sync_loss = 0.
 
-            l1loss = recon_loss(g, gt)
+                l1loss = recon_loss(g, gt)
 
-            loss = hparams.syncnet_wt * sync_loss + (1 - hparams.syncnet_wt) * l1loss
-            loss.backward()
-            optimizer.step()
-
+                loss = hparams.syncnet_wt * sync_loss + (1 - hparams.syncnet_wt) * l1loss
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            
+            scaler.update()
+            
             if global_step % checkpoint_interval == 0:
                 save_sample_images(x, g, gt, global_step, checkpoint_dir)
 
@@ -258,8 +263,8 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
             save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, average_sync_loss)
 
-            if average_sync_loss < .75:
-                hparams.set_hparam('syncnet_wt', 0.01)
+            # if average_sync_loss < .75:
+            #     hparams.set_hparam('syncnet_wt', 0.01)
         
         global_epoch += 1
         

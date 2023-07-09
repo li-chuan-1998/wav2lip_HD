@@ -1,3 +1,13 @@
 ckp_ls/*
-ckp_w2l/*
+ckp_syncnet_amp/*
+ckp_w2l_amp/*
+ckp_w2l_pl/*
+ckp_w2l_raw/*
+checkpoints/*
+inputs/*
+outputs/*
+temp/*
 demo.ipynb
+lrs2/*
+
+*.pyc

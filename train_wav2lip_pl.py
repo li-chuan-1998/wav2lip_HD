@@ -247,13 +247,14 @@ if __name__ == "__main__":
     train_data_loader = data_utils.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
     test_data_loader = data_utils.DataLoader(test_dataset, batch_size=args.batch_size, num_workers=16)
 
-    model = Wav2LipLightning(syncnet)
+    # model = Wav2LipLightning(syncnet)
+    model = Wav2LipLightning.load_from_checkpoint("./ckp_w2l/w2l-epoch=00000-train_loss=0.04116.ckpt")
 
 
     checkpoint_callback = ModelCheckpoint(dirpath=args.checkpoint_dir, 
                                           filename="w2l-{epoch:05d}-{train_loss:.5f}", 
                                           save_top_k=10, monitor="train_loss")
     trainer = pl.Trainer(max_epochs=hparams.nepochs,default_root_dir=args.checkpoint_dir, callbacks=[checkpoint_callback],  
-                         accelerator="gpu", devices=args.num_devices) 
+                         accelerator="gpu", devices=args.num_devices, precision=16) 
     # default_root_dir=args.checkpoint_dir, callbacks=[checkpoint_callback], precision=16
     trainer.fit(model, train_dataloaders=train_data_loader, val_dataloaders=test_data_loader)

@@ -71,5 +71,5 @@ class SyncNet_color(nn.Module):
         audio_embedding = F.normalize(audio_embedding, p=2, dim=1)
         face_embedding = F.normalize(face_embedding, p=2, dim=1)
 
-
-        return self.act(audio_embedding), self.act(face_embedding)
+        audio_embedding, face_embedding = self.act(audio_embedding), self.act(face_embedding)
+        return audio_embedding, face_embedding
