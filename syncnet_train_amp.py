@@ -17,7 +17,7 @@ import numpy as np
 
 global_step = 0
 global_epoch = 0
-global_lowest_eval_loss = 0.4
+global_lowest_eval_loss = 1
 use_cuda = torch.cuda.is_available()
 print('use_cuda: {}'.format(use_cuda))
 
@@ -164,7 +164,7 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
         
         # Evaluate after every epoch
         with torch.no_grad():
-            eval_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+            eval_loss = eval_model(test_data_loader, device, model)
             writer.add_scalar('Loss/eval', eval_loss, global_step)
             torch.cuda.empty_cache()
             maintain_num_checkpoints(checkpoint_dir, args.num_ckpts_save)
