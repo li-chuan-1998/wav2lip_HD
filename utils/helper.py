@@ -1,6 +1,7 @@
 import cv2, os, torch, torch.nn as nn, numpy as np
 from os.path import join
 from glob import glob
+from torch.utils.data import Subset
 
 def save_sample_images(x, g, gt, global_step, checkpoint_dir):
     x = (x.detach().cpu().numpy().transpose(0, 2, 3, 4, 1) * 255.).astype(np.uint8)
@@ -103,3 +104,9 @@ def eval_model(test_data_loader, device, model):
         losses.append(loss.item())
 
     return sum(losses) / len(losses)
+
+def get_subset(dataset, ratio=0.1):
+    n = len(dataset)
+    indices = list(range(n))
+    np.random.shuffle(indices)
+    return Subset(dataset, indices[:int(n*ratio)])

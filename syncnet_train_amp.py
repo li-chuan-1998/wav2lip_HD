@@ -6,7 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from models import SyncNet_color as SyncNet
 from hparams import hparams, get_image_list
-from utils.helper import cosine_loss, save_checkpoint, load_checkpoint, maintain_num_checkpoints, eval_model
+from utils.helper import cosine_loss, save_checkpoint, load_checkpoint, maintain_num_checkpoints, eval_model, truncate_data
 import audio
 
 import torch
@@ -199,13 +199,16 @@ if __name__ == "__main__":
     test_dataset = Dataset('val')
 
     syncnet_batch_size = args.batch_size
-    train_data_loader = data_utils.DataLoader(
-        train_dataset, batch_size=syncnet_batch_size, shuffle=True,
-        num_workers=8)
 
-    test_data_loader = data_utils.DataLoader(
-        test_dataset, batch_size=syncnet_batch_size,
-        num_workers=8)
+    if args.testing == True:
+        train_dataset = truncate_data(train_dataset)
+        test_dataset = truncate_data(test_dataset)
+
+    train_data_loader = data_utils.DataLoader(train_dataset, batch_size=syncnet_batch_size, 
+                                              shuffle=True, num_workers=args.num_workers)
+
+    test_data_loader = data_utils.DataLoader(test_dataset, batch_size=syncnet_batch_size,
+                                             num_workers=args.num_workers)
 
     # Model
     model = SyncNet().to(device)
