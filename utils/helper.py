@@ -1,6 +1,6 @@
 import cv2, os, torch, torch.nn as nn, numpy as np
 from os.path import join
-from glob import glob
+import glob
 from torch.utils.data import Subset
 
 def save_sample_images(x, g, gt, global_step, checkpoint_dir):
