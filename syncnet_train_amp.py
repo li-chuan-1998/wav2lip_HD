@@ -1,28 +1,30 @@
+import os, random, cv2, argparse
 from os.path import dirname, join, basename, isfile
 from tqdm import tqdm
+from glob import glob
+from torch.utils.tensorboard import SummaryWriter
 
 from models import SyncNet_color as SyncNet
+from hparams import hparams, get_image_list
+from utils.helper import cosine_loss, save_checkpoint, load_checkpoint, maintain_num_checkpoints, eval_model
 import audio
 
 import torch
-from torch import nn
 from torch import optim
-import torch.backends.cudnn as cudnn
 from torch.utils import data as data_utils
 import numpy as np
 
-from glob import glob
-
-import os, random, cv2, argparse
-from hparams import hparams, get_image_list
 
 global_step = 0
 global_epoch = 0
+global_lowest_eval_loss = 0.4
 use_cuda = torch.cuda.is_available()
 print('use_cuda: {}'.format(use_cuda))
 
 syncnet_T = 5
 syncnet_mel_step_size = 16
+device = torch.device("cuda" if use_cuda else "cpu")
+
 
 class Dataset(object):
     def __init__(self, split):
@@ -120,19 +122,13 @@ class Dataset(object):
 
             return x, mel, y
 
-logloss = nn.BCELoss()
-def cosine_loss(a, v, y):
-    d = nn.functional.cosine_similarity(a, v)
-    loss = logloss(d.unsqueeze(1), y)
-    return loss
-
 def train(device, model, train_data_loader, test_data_loader, optimizer,
-          checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
+          checkpoint_dir=None, nepochs=None):
 
-    global global_step, global_epoch
-    lowest_eval_loss = 0.3
+    global global_step, global_epoch, global_lowest_eval_loss
     scaler = torch.cuda.amp.GradScaler()
-    
+    writer = SummaryWriter(args.log_dir)
+
     while global_epoch < nepochs:
         running_loss = 0.
         prog_bar = tqdm(enumerate(train_data_loader), total=len(train_data_loader), desc=f"Epoch {global_epoch}", ncols=100)
@@ -141,9 +137,7 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             optimizer.zero_grad()
 
             # Transform data to CUDA device
-            x = x.to(device)
-            mel = mel.to(device)
-            y = y.to(device)
+            x, mel, y = x.to(device), mel.to(device), y.to(device)
             
             with torch.cuda.amp.autocast():
                 a, v = model(mel, x)
@@ -157,102 +151,47 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             global_step += 1
             running_loss += loss.item()
 
+            writer.add_scalar('Loss/train', running_loss / (step + 1), global_step)
             prog_bar.set_description(f'Epoch {global_epoch} - Loss: {running_loss / (step + 1):.4f}')
             prog_bar.refresh()
 
         torch.cuda.empty_cache()
         global_epoch += 1
-        # Save the model every save_epoch_interval epochs
-        if global_epoch % 5 == 0:
+
+        # Save the model every x epochs
+        if global_epoch % args.save_freq == 0:
             save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch)
-            
+        
+        # Evaluate after every epoch
         with torch.no_grad():
             eval_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
+            writer.add_scalar('Loss/eval', eval_loss, global_step)
             torch.cuda.empty_cache()
-            
-            # Append the eval_loss to a text file
-            with open('./ckp_syncnet_amp/eval_losses.txt', 'a') as file:
-                file.write(f'Epoch {global_epoch}: {eval_loss}\n')
+            maintain_num_checkpoints(checkpoint_dir, args.num_ckpts_save)
 
             # Check if this is the lowest evaluation loss
-            if eval_loss < lowest_eval_loss:
+            if eval_loss < global_lowest_eval_loss:
                 print(f"Epoch {global_epoch} Lowest Loss (eval): {eval_loss}")
-                lowest_eval_loss = eval_loss
-                save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, lowest_eval=eval_loss)
+                global_lowest_eval_loss = eval_loss
+                save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, lowest_eval=global_lowest_eval_loss)
+                maintain_num_checkpoints(checkpoint_dir, 1, is_lowest_eval=True)
 
-
-def eval_model(test_data_loader, global_step, device, model, checkpoint_dir):
-    losses = []
-    # bar = tqdm(enumerate(test_data_loader), total=len(test_data_loader), desc=f"Evaluation", ncols=100)
-    model.eval()
-    for step, (x, mel, y) in enumerate(test_data_loader):
-
-        # Transform data to CUDA device
-        x = x.to(device)
-
-        mel = mel.to(device)
-
-        a, v = model(mel, x)
-        y = y.to(device)
-
-        loss = cosine_loss(a, v, y)
-        losses.append(loss.item())
-        
-        # bar.set_description(f'Evaluation - Loss: {sum(losses) / len(losses):.4f}')
-        # bar.refresh()
-
-    return sum(losses) / len(losses)
-
-def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, lowest_eval=None):
-    pth_name = f"checkpoint_step{global_step:09d}_lowest_{lowest_eval:.4f}.pth" if lowest_eval else "checkpoint_step{:09d}.pth".format(global_step)
-    checkpoint_path = join(checkpoint_dir, pth_name)
-    optimizer_state = optimizer.state_dict() if hparams.save_optimizer_state else None
-    torch.save({
-        "state_dict": model.state_dict(),
-        "optimizer": optimizer_state,
-        "global_step": step,
-        "global_epoch": epoch,
-    }, checkpoint_path)
-    print("Saved checkpoint:", checkpoint_path)
-
-def _load(checkpoint_path):
-    if use_cuda:
-        checkpoint = torch.load(checkpoint_path)
-    else:
-        checkpoint = torch.load(checkpoint_path,
-                                map_location=lambda storage, loc: storage)
-    return checkpoint
-
-def load_checkpoint(path, model, optimizer, reset_optimizer=False):
-    global global_step
-    global global_epoch
-
-    print("Load checkpoint from: {}".format(path))
-    checkpoint = _load(path)
-    model.load_state_dict(checkpoint["state_dict"])
-    if not reset_optimizer:
-        optimizer_state = checkpoint["optimizer"]
-        if optimizer_state is not None:
-            print("Load optimizer state from {}".format(path))
-            optimizer.load_state_dict(checkpoint["optimizer"])
-    global_step = checkpoint["global_step"]
-    global_epoch = checkpoint["global_epoch"]
-
-    return model
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Code to train the expert lip-sync discriminator')
-
     parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True)
     parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
+    parser.add_argument('--log_dir', help='Save checkpoints to this directory', required=True, type=str)
     parser.add_argument('--checkpoint_path', help='Resumed from this checkpoint', default=None, type=str)
-    parser.add_argument("--batch_size", type=int, default=32,  help="the batch size")
+    parser.add_argument('--nepochs', type=int, default=200000000000000000, help="stop whenever eval loss > train loss for ~10 epochs")
+    parser.add_argument('-bs','--batch_size', type=int, default=256, help="the batch size")
+    parser.add_argument('-sf','--save_freq', type=int, default=20, help="Save per x epoch")
+    parser.add_argument('-lr','--learning_rate', type=int, default=1e-4, help="learning rate for SyncNet")
+    parser.add_argument('-ncs','--num_ckpts_save', type=int, default=5, help="Save a max number of ckpts in the dir")
     args = parser.parse_args()
-    
-    checkpoint_dir = args.checkpoint_dir
-    checkpoint_path = args.checkpoint_path
 
-    if not os.path.exists(checkpoint_dir): os.mkdir(checkpoint_dir)
+    if not os.path.exists(args.checkpoint_dir): 
+        os.mkdir(args.checkpoint_dir)
 
     # Dataset and Dataloader setup
     train_dataset = Dataset('train')
@@ -264,24 +203,17 @@ if __name__ == "__main__":
         num_workers=8)
 
     test_data_loader = data_utils.DataLoader(
-        test_dataset, batch_size=syncnet_batch_size//2,
+        test_dataset, batch_size=syncnet_batch_size,
         num_workers=8)
-
-    device = torch.device("cuda" if use_cuda else "cpu")
 
     # Model
     model = SyncNet().to(device)
     print('total trainable params {}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad)))
 
-    optimizer = optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                           lr=hparams.syncnet_lr)
-                        #    lr=0.001)
-                        #    lr=hparams.syncnet_lr)
+    optimizer = optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.learning_rate)
 
-    if checkpoint_path is not None:
-        load_checkpoint(checkpoint_path, model, optimizer, reset_optimizer=False)
+    if args.checkpoint_path is not None:
+        load_checkpoint(args.checkpoint_path, model, optimizer, reset_optimizer=False, use_cuda=use_cuda)
 
     train(device, model, train_data_loader, test_data_loader, optimizer,
-          checkpoint_dir=checkpoint_dir,
-          checkpoint_interval=hparams.syncnet_checkpoint_interval,
-          nepochs=hparams.nepochs)
+          checkpoint_dir=args.checkpoint_dir, nepochs=args.nepochs)
