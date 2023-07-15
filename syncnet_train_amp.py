@@ -6,7 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from models import SyncNet_color as SyncNet
 from hparams import hparams, get_image_list
-from utils.helper import cosine_loss, save_checkpoint, load_checkpoint, maintain_num_checkpoints, eval_model, truncate_data
+from utils.helper import cosine_loss, save_checkpoint, load_checkpoint, maintain_num_checkpoints, eval_model, get_subset
 import audio
 
 import torch
@@ -189,6 +189,7 @@ if __name__ == "__main__":
     parser.add_argument('-lr','--learning_rate', type=int, default=1e-4, help="learning rate for SyncNet")
     parser.add_argument('-ncs','--num_ckpts_save', type=int, default=5, help="Save a max number of ckpts in the dir")
     parser.add_argument('-nw','--num_workers', type=int, default=8, help="numer of workers for dataloader")
+    parser.add_argument('-t','--testing', action='store_true', default=False)
     args = parser.parse_args()
 
     if not os.path.exists(args.checkpoint_dir): 
@@ -201,8 +202,8 @@ if __name__ == "__main__":
     syncnet_batch_size = args.batch_size
 
     if args.testing == True:
-        train_dataset = truncate_data(train_dataset)
-        test_dataset = truncate_data(test_dataset)
+        train_dataset = get_subset(train_dataset)
+        test_dataset = get_subset(test_dataset)
 
     train_data_loader = data_utils.DataLoader(train_dataset, batch_size=syncnet_batch_size, 
                                               shuffle=True, num_workers=args.num_workers)
