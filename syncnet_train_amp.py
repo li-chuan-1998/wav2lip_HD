@@ -179,15 +179,16 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Code to train the expert lip-sync discriminator')
-    parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True)
-    parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
-    parser.add_argument('--log_dir', help='Save checkpoints to this directory', required=True, type=str)
     parser.add_argument('--checkpoint_path', help='Resumed from this checkpoint', default=None, type=str)
     parser.add_argument('--nepochs', type=int, default=200000000000000000, help="stop whenever eval loss > train loss for ~10 epochs")
+    parser.add_argument('-dr',"--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True)
+    parser.add_argument('-ckp_dir','--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
+    parser.add_argument('-log_dir','--log_dir', help='Save checkpoints to this directory', required=True, type=str)
     parser.add_argument('-bs','--batch_size', type=int, default=256, help="the batch size")
     parser.add_argument('-sf','--save_freq', type=int, default=20, help="Save per x epoch")
     parser.add_argument('-lr','--learning_rate', type=int, default=1e-4, help="learning rate for SyncNet")
     parser.add_argument('-ncs','--num_ckpts_save', type=int, default=5, help="Save a max number of ckpts in the dir")
+    parser.add_argument('-nw','--num_workers', type=int, default=8, help="numer of workers for dataloader")
     args = parser.parse_args()
 
     if not os.path.exists(args.checkpoint_dir): 
