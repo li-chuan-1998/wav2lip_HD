@@ -167,14 +167,15 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             eval_loss = eval_model(test_data_loader, device, model)
             writer.add_scalar('Loss/eval', eval_loss, global_step)
             torch.cuda.empty_cache()
-            maintain_num_checkpoints(checkpoint_dir, args.num_ckpts_save)
 
             # Check if this is the lowest evaluation loss
             if eval_loss < global_lowest_eval_loss:
                 print(f"Epoch {global_epoch} Lowest Loss (eval): {eval_loss}")
                 global_lowest_eval_loss = eval_loss
                 save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, lowest_eval=global_lowest_eval_loss)
-                maintain_num_checkpoints(checkpoint_dir, 1, is_lowest_eval=True)
+        
+        # To save storage space
+        maintain_num_checkpoints(checkpoint_dir, args.num_ckpts_save)
 
 
 if __name__ == "__main__":

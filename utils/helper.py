@@ -54,18 +54,6 @@ def cosine_loss(a, v, y):
     loss = logloss(d.unsqueeze(1), y)
     return loss
 
-# def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, lowest_eval=None, save_optim=True):
-#     pth_name = f"checkpoint_step{step:09d}_lowest_{lowest_eval:.4f}.pth" if lowest_eval else "checkpoint_step{:09d}.pth".format(step)
-#     checkpoint_path = join(checkpoint_dir, pth_name)
-#     optimizer_state = optimizer.state_dict() if save_optim else None
-#     torch.save({
-#         "state_dict": model.state_dict(),
-#         "optimizer": optimizer_state,
-#         "global_step": step,
-#         "global_epoch": epoch,
-#         "global_lowest_eval_loss": lowest_eval
-#     }, checkpoint_path)
-#     print("Saved checkpoint:", checkpoint_path)
 
 def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, lowest_eval=None, save_optim=True):
     if lowest_eval:
@@ -84,13 +72,26 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, lowest_eval=N
     }, checkpoint_path)
     print("Saved checkpoint:", checkpoint_path)
 
-def maintain_num_checkpoints(checkpoint_dir, max_num_ckpts, is_lowest_eval=False):
-    pattern = f"{checkpoint_dir}/*_{'lowestEval' if is_lowest_eval else 'ckpt'}*.pth"
-    files = glob.glob(pattern)
-    if len(files) > max_num_ckpts:
-        files.sort(key=os.path.getmtime)
-        for file in files[:-max_num_ckpts]: # removing oldest files
+def split_file_names(directory):
+    lowest_eval_files, other_files = [], []
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+        if "lowestEval" in filename:
+            lowest_eval_files.append(file_path)
+        else:
+            other_files.append(file_path)
+    lowest_eval_files.sort(), other_files.sort()
+    return lowest_eval_files, other_files
+
+def maintain_num_checkpoints(checkpoint_dir, max_num_ckpts):
+    eval, others = split_file_names(checkpoint_dir)
+    if len(eval) > 1:
+        os.remove(eval[0])
+
+    if len(others) > max_num_ckpts:
+        for file in others[:-max_num_ckpts]:
             os.remove(file)
+
 
 def eval_model(test_data_loader, device, model):
     losses = []
