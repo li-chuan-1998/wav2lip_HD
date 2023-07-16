@@ -203,8 +203,7 @@ if __name__ == "__main__":
     syncnet_batch_size = args.batch_size
 
     if args.testing == True:
-        train_dataset = get_subset(train_dataset)
-        test_dataset = get_subset(test_dataset)
+        train_dataset, test_dataset = get_subset(train_dataset), get_subset(test_dataset)
 
     train_data_loader = data_utils.DataLoader(train_dataset, batch_size=syncnet_batch_size, 
                                               shuffle=True, num_workers=args.num_workers)
