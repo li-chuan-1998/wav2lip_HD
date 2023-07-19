@@ -20,16 +20,14 @@ import torch.distributed as dist
 import os, random, cv2, argparse
 from hparams import hparams, get_image_list
 
+from utils.train_utils import wasserstein_loss, cosine_loss, recon_loss, get_sync_loss, save_checkpoint, load_checkpoint
+
 parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model WITH the visual quality discriminator')
-
 parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True, type=str)
-
 parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
 parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator', default="./ckp_ls/lip-sync.pth", type=str)
-
 parser.add_argument('--checkpoint_path', help='Resume generator from this checkpoint', default=None, type=str)
 parser.add_argument('--disc_checkpoint_path', help='Resume quality disc from this checkpoint', default=None, type=str)
-
 args = parser.parse_args()
 
 
@@ -43,9 +41,6 @@ syncnet_mel_step_size = 16
 
 LAMBDA = 10  # gradient penalty
 
-
-def wasserstein_loss(y_pred, y_true):
-    return torch.mean(y_true * y_pred)
 
 class Dataset(object):
     def __init__(self, split):
@@ -186,26 +181,11 @@ def save_sample_images(x, g, gt, global_step, checkpoint_dir):
         for t in range(len(c)):
             cv2.imwrite('{}/{}_{}.jpg'.format(folder, batch_idx, t), c[t])
 
-logloss = nn.BCELoss()
-def cosine_loss(a, v, y):
-    d = nn.functional.cosine_similarity(a, v)
-    loss = logloss(d.unsqueeze(1), y)
-
-    return loss
 
 device = torch.device("cuda" if use_cuda else "cpu")
 syncnet = SyncNet().to(device)
 for p in syncnet.parameters():
     p.requires_grad = False
-
-recon_loss = nn.L1Loss()
-def get_sync_loss(mel, g):
-    g = g[:, :, :, g.size(3)//2:]
-    g = torch.cat([g[:, :, i] for i in range(syncnet_T)], dim=1)
-    # B, 3 * T, H//2, W
-    a, v = syncnet(mel, g)
-    y = torch.ones(g.size(0), 1).float().to(device)
-    return cosine_loss(a, v, y)
 
 def train(device, model, disc, train_data_loader, test_data_loader, optimizer, disc_optimizer,
           checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
@@ -222,10 +202,7 @@ def train(device, model, disc, train_data_loader, test_data_loader, optimizer, d
             disc.train()
             model.train()
 
-            x = x.to(device)
-            mel = mel.to(device)
-            indiv_mels = indiv_mels.to(device)
-            gt = gt.to(device)
+            x, mel, indiv_mels, gt  = x.to(device), mel.to(device), indiv_mels.to(device), gt.to(device)
 
             ### Train generator now. Remove ALL grads. 
             optimizer.zero_grad()
@@ -234,7 +211,7 @@ def train(device, model, disc, train_data_loader, test_data_loader, optimizer, d
             g = model(indiv_mels, x)
 
             if hparams.syncnet_wt > 0.:
-                sync_loss = get_sync_loss(mel, g)
+                sync_loss = get_sync_loss(mel, g, syncnet)
             else:
                 sync_loss = 0.
 
@@ -284,7 +261,7 @@ def train(device, model, disc, train_data_loader, test_data_loader, optimizer, d
 
             running_disc_real_loss += disc_real_loss.item()
             running_disc_fake_loss += disc_fake_loss.item()
-             running_gp += gradient_penalty.item()
+            running_gp += gradient_penalty.item()
             if global_step % checkpoint_interval == 0:
                 save_sample_images(x, g, gt, global_step, checkpoint_dir)
 
@@ -377,49 +354,6 @@ def eval_model(test_data_loader, global_step, device, model, disc):
                                                              sum(running_disc_real_loss) / len(running_disc_real_loss)))
         return sum(running_sync_loss) / len(running_sync_loss)
 
-
-def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, prefix=''):
-    checkpoint_path = join(
-        checkpoint_dir, "{}checkpoint_step{:09d}.pth".format(prefix, global_step))
-    optimizer_state = optimizer.state_dict() if hparams.save_optimizer_state else None
-    torch.save({
-        "state_dict": model.state_dict(),
-        "optimizer": optimizer_state,
-        "global_step": step,
-        "global_epoch": epoch,
-    }, checkpoint_path)
-    print("Saved checkpoint:", checkpoint_path)
-
-def _load(checkpoint_path):
-    if use_cuda:
-        checkpoint = torch.load(checkpoint_path)
-    else:
-        checkpoint = torch.load(checkpoint_path,
-                                map_location=lambda storage, loc: storage)
-    return checkpoint
-
-
-def load_checkpoint(path, model, optimizer, reset_optimizer=False, overwrite_global_states=True):
-    global global_step
-    global global_epoch
-
-    print("Load checkpoint from: {}".format(path))
-    checkpoint = _load(path)
-    s = checkpoint["state_dict"]
-    new_s = {}
-    for k, v in s.items():
-        new_s[k.replace('module.', '')] = v
-    model.load_state_dict(new_s)
-    if not reset_optimizer:
-        optimizer_state = checkpoint["optimizer"]
-        if optimizer_state is not None:
-            print("Load optimizer state from {}".format(path))
-            optimizer.load_state_dict(checkpoint["optimizer"])
-    if overwrite_global_states:
-        global_step = checkpoint["global_step"]
-        global_epoch = checkpoint["global_epoch"]
-
-    return model
 
 if __name__ == "__main__":
     checkpoint_dir = args.checkpoint_dir
