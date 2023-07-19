@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models import SyncNet_color as SyncNet
 from hparams import hparams, get_image_list
 from utils.helper import cosine_loss, save_checkpoint, load_checkpoint, maintain_num_checkpoints, eval_model, get_subset
-import audio
+import utils.audio as audio
 
 import torch
 from torch import optim
