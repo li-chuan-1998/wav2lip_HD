@@ -16,11 +16,11 @@ from glob import glob
 
 import os, random, cv2, argparse
 from hparams import hparams, get_image_list
-from utils.train_utils import recon_loss, get_sync_loss, save_checkpoint, load_checkpoint
-
+from utils.train_utils import recon_loss, get_sync_loss
 
 global_step = 0
-global_epoch = 1
+global_epoch = 0
+lowest_sync_loss = 1.0
 use_cuda = torch.cuda.is_available()
 print('use_cuda: {}'.format(use_cuda))
 
@@ -175,9 +175,8 @@ scaler = torch.cuda.amp.GradScaler()
 def train(device, model, train_data_loader, test_data_loader, optimizer,
           checkpoint_dir=None, checkpoint_interval=None, nepochs=None):
 
-    global global_step, global_epoch
+    global global_step, global_epoch, lowest_sync_loss
  
-    hparams.set_hparam('syncnet_wt', 0.01)
     while global_epoch < nepochs:
         running_sync_loss, running_l1_loss = 0., 0.
         prog_bar = tqdm(enumerate(train_data_loader), total=len(train_data_loader), desc=f"Epoch {global_epoch}", ncols=100)
@@ -187,10 +186,7 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             optimizer.zero_grad()
 
             # Move data to CUDA device
-            x = x.to(device)
-            mel = mel.to(device)
-            indiv_mels = indiv_mels.to(device)
-            gt = gt.to(device)
+            x, mel, indiv_mels, gt  = x.to(device), mel.to(device), indiv_mels.to(device), gt.to(device)
 
             with torch.cuda.amp.autocast():
                 g = model(indiv_mels, x)
@@ -202,12 +198,10 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
                     sync_loss = 0.
 
                 l1loss = recon_loss(g, gt)
-
                 loss = hparams.syncnet_wt * sync_loss + (1 - hparams.syncnet_wt) * l1loss
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
-            
             scaler.update()
             
             if global_step % checkpoint_interval == 0:
@@ -223,28 +217,28 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
 
             prog_bar.set_description(f'Epoch {global_epoch} - L1: {running_l1_loss/(step + 1):.5f}, Sync Loss: {running_sync_loss/(step + 1):.5f}')
             prog_bar.refresh()
-        
+
+        torch.cuda.empty_cache()
+        global_epoch += 1
+        if global_epoch % args.save_freq == 0:
+            save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch)
+
 
         with torch.no_grad():
             average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
-            save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, average_sync_loss)
+            if average_sync_loss < lowest_sync_loss:
+                save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, average_sync_loss)
+                lowest_sync_loss = average_sync_loss
 
             if average_sync_loss < .75:
                 hparams.set_hparam('syncnet_wt', 0.01)
         
-        global_epoch += 1
         
-
-def eval_model(test_data_loader, global_step, device, model, checkpoint_dir):
+def eval_model(test_data_loader, device, model):
     sync_losses, recon_losses = [], []
     model.eval()
     for x, indiv_mels, mel, gt in test_data_loader:
-        # Move data to CUDA device
-        x = x.to(device)
-        gt = gt.to(device)
-        indiv_mels = indiv_mels.to(device)
-        mel = mel.to(device)
-
+        x, mel, indiv_mels, gt  = x.to(device), mel.to(device), indiv_mels.to(device), gt.to(device)
         g = model(indiv_mels, x)
 
         sync_loss = get_sync_loss(mel, g)
@@ -259,16 +253,16 @@ def eval_model(test_data_loader, global_step, device, model, checkpoint_dir):
     print('Evaluation - L1: {}, Sync loss: {}'.format(averaged_recon_loss, averaged_sync_loss))
     return averaged_sync_loss
 
-def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, eval_loss):
-
-    checkpoint_path = join(
-        checkpoint_dir, f"checkpoint_step{global_step:09d}_{eval_loss:.5f}.pth")
+def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, sync_loss=None):
+    ckpt_name = f"checkpoint_step{global_step:09d}" + (f"_sync-loss:{sync_loss:.5f}.pth" if sync_loss else ".pth")
+    checkpoint_path = join(checkpoint_dir, ckpt_name)
     optimizer_state = optimizer.state_dict() if hparams.save_optimizer_state else None
     torch.save({
         "state_dict": model.state_dict(),
         "optimizer": optimizer_state,
         "global_step": step,
         "global_epoch": epoch,
+        "lowest_sync_loss": sync_loss,
     }, checkpoint_path)
     print("Saved checkpoint:", checkpoint_path)
 
@@ -281,8 +275,7 @@ def _load(checkpoint_path):
     return checkpoint
 
 def load_checkpoint(path, model, optimizer, reset_optimizer=False, overwrite_global_states=True):
-    global global_step
-    global global_epoch
+    global global_step, global_epoch, lowest_sync_loss
 
     print("Load checkpoint from: {}".format(path))
     checkpoint = _load(path)
@@ -299,15 +292,16 @@ def load_checkpoint(path, model, optimizer, reset_optimizer=False, overwrite_glo
     if overwrite_global_states:
         global_step = checkpoint["global_step"]
         global_epoch = checkpoint["global_epoch"]
+        lowest_sync_loss = checkpoint["lowest_sync_loss"]
 
     return model
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model without the visual quality discriminator')
-    parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True, type=str)
-    parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
-    parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator', default="./ckp_ls/lip_sync.pth", type=str)
-    parser.add_argument("--batch_size", type=int, default=32,  help="the batch size")
+    parser.add_argument('-ds',"--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True, type=str)
+    parser.add_argument('-ckpt_dir','--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
+    parser.add_argument('-syncnet_ckpt','--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator',required=True, type=str)
+    parser.add_argument('-bs',"--batch_size", type=int, default=64,  help="the batch size")
     parser.add_argument('--checkpoint_path', help='Resume from this checkpoint', default=None, type=str)
     parser.add_argument('-nw','--num_workers', type=int, default=8, help="numer of workers for dataloader")
     args = parser.parse_args()
