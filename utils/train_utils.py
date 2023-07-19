@@ -54,7 +54,7 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, sync_loss=Non
     }, checkpoint_path)
     print("Saved checkpoint:", checkpoint_path)
 
-def _load(checkpoint_path):
+def _load(checkpoint_path, use_cuda=True):
     if use_cuda:
         checkpoint = torch.load(checkpoint_path)
     else:
