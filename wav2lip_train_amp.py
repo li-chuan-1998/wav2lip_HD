@@ -16,19 +16,7 @@ from glob import glob
 
 import os, random, cv2, argparse
 from hparams import hparams, get_image_list
-
-parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model without the visual quality discriminator')
-
-parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True, type=str)
-
-parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
-parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator', default="./ckp_ls/lip_sync.pth", type=str)
-
-parser.add_argument("--batch_size", type=int, default=32,  help="the batch size")
-
-parser.add_argument('--checkpoint_path', help='Resume from this checkpoint', default=None, type=str)
-
-args = parser.parse_args()
+from utils.train_utils import recon_loss, get_sync_loss, save_checkpoint, load_checkpoint
 
 
 global_step = 0
@@ -178,25 +166,10 @@ def save_sample_images(x, g, gt, global_step, checkpoint_dir):
         for t in range(len(c)):
             cv2.imwrite('{}/{}_{}.jpg'.format(folder, batch_idx, t), c[t])
 
-logloss = nn.BCELoss()
-def cosine_loss(a, v, y):
-    d = nn.functional.cosine_similarity(a, v)
-    loss = logloss(d.unsqueeze(1), y)
-    return loss
-
 device = torch.device("cuda" if use_cuda else "cpu")
 syncnet = SyncNet().to(device)
 for p in syncnet.parameters():
     p.requires_grad = False
-
-recon_loss = nn.L1Loss()
-def get_sync_loss(mel, g):
-    g = g[:, :, :, g.size(3)//2:]
-    g = torch.cat([g[:, :, i] for i in range(syncnet_T)], dim=1)
-    # B, 3 * T, H//2, W
-    a, v = syncnet(mel, g)
-    y = torch.ones(g.size(0), 1).float().to(device)
-    return cosine_loss(a, v, y)
 
 scaler = torch.cuda.amp.GradScaler()
 def train(device, model, train_data_loader, test_data_loader, optimizer,
@@ -224,7 +197,7 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
 
                 if hparams.syncnet_wt > 0.:
                     with torch.cuda.amp.autocast(enabled=False):
-                        sync_loss = get_sync_loss(mel.float(), g.float())
+                        sync_loss = get_sync_loss(mel.float(), g.float(), syncnet)
                 else:
                     sync_loss = 0.
 
@@ -248,13 +221,6 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             else:
                 running_sync_loss += 0.
 
-            # if global_step == 1 or global_step % hparams.eval_interval == 0:
-            #     with torch.no_grad():
-            #         average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
-
-            #         if average_sync_loss < .75:
-            #             hparams.set_hparam('syncnet_wt', 0.01) # without image GAN a lesser weight is sufficient
-
             prog_bar.set_description(f'Epoch {global_epoch} - L1: {running_l1_loss/(step + 1):.5f}, Sync Loss: {running_sync_loss/(step + 1):.5f}')
             prog_bar.refresh()
         
@@ -263,8 +229,8 @@ def train(device, model, train_data_loader, test_data_loader, optimizer,
             average_sync_loss = eval_model(test_data_loader, global_step, device, model, checkpoint_dir)
             save_checkpoint(model, optimizer, global_step, checkpoint_dir, global_epoch, average_sync_loss)
 
-            # if average_sync_loss < .75:
-            #     hparams.set_hparam('syncnet_wt', 0.01)
+            if average_sync_loss < .75:
+                hparams.set_hparam('syncnet_wt', 0.01)
         
         global_epoch += 1
         
@@ -337,19 +303,20 @@ def load_checkpoint(path, model, optimizer, reset_optimizer=False, overwrite_glo
     return model
 
 if __name__ == "__main__":
-    checkpoint_dir = args.checkpoint_dir
+    parser = argparse.ArgumentParser(description='Code to train the Wav2Lip model without the visual quality discriminator')
+    parser.add_argument("--data_root", help="Root folder of the preprocessed LRS2 dataset", required=True, type=str)
+    parser.add_argument('--checkpoint_dir', help='Save checkpoints to this directory', required=True, type=str)
+    parser.add_argument('--syncnet_checkpoint_path', help='Load the pre-trained Expert discriminator', default="./ckp_ls/lip_sync.pth", type=str)
+    parser.add_argument("--batch_size", type=int, default=32,  help="the batch size")
+    parser.add_argument('--checkpoint_path', help='Resume from this checkpoint', default=None, type=str)
+    parser.add_argument('-nw','--num_workers', type=int, default=8, help="numer of workers for dataloader")
+    args = parser.parse_args()
 
     # Dataset and Dataloader setup
     train_dataset = Dataset('train')
     test_dataset = Dataset('val')
-
-    train_data_loader = data_utils.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=2)
-
-    test_data_loader = data_utils.DataLoader(
-        test_dataset, batch_size=args.batch_size,
-        num_workers=2)
+    train_data_loader = data_utils.DataLoader( train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    test_data_loader = data_utils.DataLoader( test_dataset, batch_size=args.batch_size, num_workers=args.num_workers)
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -365,11 +332,11 @@ if __name__ == "__main__":
         
     load_checkpoint(args.syncnet_checkpoint_path, syncnet, None, reset_optimizer=True, overwrite_global_states=False)
 
-    if not os.path.exists(checkpoint_dir):
-        os.mkdir(checkpoint_dir)
+    if not os.path.exists(args.checkpoint_dir):
+        os.mkdir(args.checkpoint_dir)
 
     # Train!
     train(device, model, train_data_loader, test_data_loader, optimizer,
-              checkpoint_dir=checkpoint_dir,
+              checkpoint_dir=args.checkpoint_dir,
               checkpoint_interval=hparams.checkpoint_interval,
               nepochs=hparams.nepochs)
