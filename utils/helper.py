@@ -72,14 +72,15 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, epoch, lowest_eval=N
     }, checkpoint_path)
     print("Saved checkpoint:", checkpoint_path)
 
-def split_file_names(directory):
+def split_file_names(directory, single="lowestEval"):
     lowest_eval_files, other_files = [], []
     for filename in os.listdir(directory):
-        file_path = os.path.join(directory, filename)
-        if "lowestEval" in filename:
-            lowest_eval_files.append(file_path)
-        else:
-            other_files.append(file_path)
+        if filename.endswith(".pth"):
+            file_path = os.path.join(directory, filename)
+            if single in filename:
+                lowest_eval_files.append(file_path)
+            else:
+                other_files.append(file_path)
     lowest_eval_files.sort(), other_files.sort()
     return lowest_eval_files, other_files
 
